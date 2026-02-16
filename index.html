@@ -122,7 +122,7 @@
         const urlParams = new URLSearchParams(window.location.search);
         const symbol = urlParams.get('n') || 'BTC';
         const tf = urlParams.get('tf') || '1m';
-        const apiUrl = `/api/symbol?symbol=${symbol}`; // путь к вашему Python-эндпоинту
+        const apiUrl = `http://77.91.68.42:8000/api/symbol?symbol=${symbol}`; // путь к вашему Python-эндпоинту
 
         let chart, mainSeries;
         let tickSize = 0.00000001;
