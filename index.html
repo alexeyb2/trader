@@ -1,1 +1,463 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>График с волнами</title>
+    <style>
+        html, body {
+            padding: 0;
+            margin: 0;
+            font-family: Arial, sans-serif;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            -webkit-touch-callout: none;
+            -webkit-user-select: none;
+            -moz-user-select: none;
+            -ms-user-select: none;
+            user-select: none;
+            touch-action: manipulation;
+        }
+        #container {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            top: 0;
+            left: 0;
+        }
+        #forWrite {
+            position: absolute;
+            z-index: 1;
+            font-size: small;
+            display: block;
+            left: 0;
+            top: 0;
+            background: rgba(255,255,255,0.8);
+            padding: 2px 5px;
+            border-radius: 3px;
+        }
+        /* Кнопка и форма ввода (можно оставить как в chart.php) */
+        #toggleFormBtn {
+            position: absolute;
+            z-index: 3;
+            top: 10px;
+            right: 10px;
+            background: #007bff;
+            color: white;
+            padding: 12px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 18px;
+            min-width: 44px;
+            min-height: 44px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+        }
+        #entryForm {
+            position: absolute;
+            z-index: 2;
+            top: 40px;
+            right: 10px;
+            background: rgba(255, 255, 255, 0.98);
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+            transition: all 0.3s ease;
+            max-width: 280px;
+            width: 80vw;
+        }
+        #entryForm.hidden {
+            transform: translateX(calc(100% + 10px));
+            opacity: 0;
+            pointer-events: none;
+        }
+        #entryForm input, #entryForm select {
+            margin: 8px 0;
+            padding: 10px;
+            width: 100%;
+            box-sizing: border-box;
+            font-size: 16px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        #entryForm button {
+            margin-top: 15px;
+            padding: 12px;
+            background: #007bff;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            width: 100%;
+            font-size: 16px;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div id="container"></div>
+    <div id="forWrite">Загрузка...</div>
+    <div id="toggleFormBtn">☰</div>
+    <div id="entryForm" class="hidden">
+        <h3 style="margin-top:0;">Параметры позиции</h3>
+        <div><label>Цена входа:</label><input type="number" id="entryPrice" step="any" placeholder="Цена"></div>
+        <div><label>Количество:</label><input type="number" id="quantity" step="1" placeholder="Количество"></div>
+        <div><label>Направление:</label>
+            <select id="direction">
+                <option value="long">Long</option>
+                <option value="short">Short</option>
+            </select>
+        </div>
+        <div><label>Стоп-лосс:</label><input type="number" id="stopLoss" step="any" placeholder="Стоп-лосс"></div>
+        <button id="saveEntry">Сохранить</button>
+    </div>
 
+    <script src="https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/ccxt@4.4.86/dist/ccxt.browser.min.js"></script>
+    <script>
+        // Получаем параметры из URL
+        const urlParams = new URLSearchParams(window.location.search);
+        const symbol = urlParams.get('n') || 'BTC';
+        const tf = urlParams.get('tf') || '1m';
+        const apiUrl = `/api/symbol?symbol=${symbol}`; // путь к вашему Python-эндпоинту
+
+        let chart, mainSeries;
+        let tickSize = 0.00000001;
+        let priceDecimals = 8;
+        let linesData = []; // для хранения созданных линий для обновления заголовков
+        let wavesSeries = {}; // для хранения серий волн
+
+        // Функция загрузки данных
+        async function loadData() {
+            const response = await fetch(apiUrl);
+            if (!response.ok) throw new Error('Ошибка загрузки данных');
+            const data = await response.json();
+            return data;
+        }
+
+        // Инициализация графика
+        function initChart() {
+            chart = LightweightCharts.createChart(document.getElementById('container'), {
+                localization: {
+                    priceFormatter: p => p.toFixed(priceDecimals)
+                },
+                timeScale: {
+                    timeVisible: true,
+                    barSpacing: 10
+                }
+            });
+            mainSeries = chart.addCandlestickSeries();
+        }
+
+        // Создание горизонтальной линии
+        function addLine(price, settings) {
+            const line = mainSeries.createPriceLine({
+                price: price,
+                color: settings.color || 'red',
+                lineWidth: settings.lineWidth || 1,
+                lineStyle: settings.lineStyle || 0,
+                title: settings.title || '',
+                axisLabelVisible: true
+            });
+            linesData.push({
+                line: line,
+                originalTitle: settings.title || '',
+                price: price
+            });
+            return line;
+        }
+
+        // Создание волны (отдельная серия)
+        function addWave(name, points, settings) {
+            if (!points.length) return;
+            const waveSeries = chart.addLineSeries({
+                color: settings.color || 'blue',
+                lineWidth: settings.lineWidth || 1,
+                title: settings.title || name
+            });
+            const data = points.map(p => ({ time: p[0], value: p[1] }));
+            waveSeries.setData(data);
+            wavesSeries[name] = waveSeries;
+        }
+
+        // Создание маркеров на основной серии
+        function setMarkers(markers) {
+            mainSeries.setMarkers(markers.map(m => ({
+                time: m.time,
+                position: m.position || 'inBar',
+                color: m.color || 'red',
+                shape: m.shape || 'circle',
+                text: m.text || ''
+            })));
+        }
+
+        // Отрисовка индикаторов (горизонтальные линии последних значений)
+        function drawIndicators(indicators) {
+            const names = ['bb_lower', 'bb_middle', 'bb_upper', 'sar'];
+            const colors = ['red', 'green', 'blue', 'yellow', '#fde910'];
+            let lineWidth = 1;
+            for (const [tf, tfData] of Object.entries(indicators)) {
+                names.forEach((name, idx) => {
+                    if (tfData[name] && tfData[name][1] !== undefined) {
+                        const price = tfData[name][1];
+                        const title = `${tf}_${name}`;
+                        addLine(price, {
+                            title: title,
+                            color: colors[idx],
+                            lineWidth: lineWidth,
+                            lineStyle: 1
+                        });
+                        // Для SAR добавляем предыдущее значение
+                        if (name === 'sar' && tfData[name][0] !== undefined) {
+                            addLine(tfData[name][0], {
+                                title: title + '_before',
+                                color: colors[4],
+                                lineWidth: lineWidth,
+                                lineStyle: 1
+                            });
+                        }
+                    }
+                });
+                lineWidth++;
+            }
+        }
+
+        // Отрисовка уровней (из levels и targets)
+        function drawLevels(levels, direction, defaultColor) {
+            if (!Array.isArray(levels)) return;
+            levels.forEach(level => {
+                if (level.price) {
+                    addLine(level.price, {
+                        title: `${level.tf || ''} ${level.by || ''} ${direction ? 'верх' : 'низ'}`,
+                        color: defaultColor,
+                        lineWidth: 1,
+                        lineStyle: 0
+                    });
+                }
+            });
+        }
+
+        // Отрисовка волн из структуры wave (упрощённо: две волны: limits и self)
+        function drawWaves(waveData) {
+            if (!waveData || !waveData['..'] || !waveData[':']) return;
+
+            const waveSettings = waveData[':'];
+            const wavePoints = waveData['..'];
+
+            // Функция для извлечения точек из массива
+            function extractPoints(arr) {
+                return arr
+                    .filter(item => item && item['.'])
+                    .map(item => item['.'])
+                    .sort((a, b) => a[0] - b[0]);
+            }
+
+            // Обрабатываем limits
+            if (wavePoints.limits && Array.isArray(wavePoints.limits)) {
+                const points = extractPoints(wavePoints.limits);
+                const settings = waveSettings.limits || {};
+                const color = settings.direction === 1 ? 'green' : 'red';
+                addWave('limits', points, { color: color, lineWidth: 2, title: 'limits' });
+            }
+
+            // Обрабатываем self
+            if (wavePoints.self && Array.isArray(wavePoints.self)) {
+                const points = extractPoints(wavePoints.self);
+                const settings = waveSettings.self || {};
+                const color = settings.direction === 1 ? 'blue' : 'orange';
+                addWave('self', points, { color: color, lineWidth: 1, title: 'self' });
+            }
+
+            // Добавляем маркеры для всех точек (опционально)
+            const allMarkers = [];
+            if (wavePoints.limits) {
+                wavePoints.limits.forEach(item => {
+                    if (item['.']) {
+                        const time = item['.'][0];
+                        const dir = item[':']?.direction;
+                        allMarkers.push({
+                            time: time,
+                            position: 'belowBar',
+                            color: dir === 1 ? 'green' : 'red',
+                            shape: dir === 1 ? 'arrowUp' : 'arrowDown',
+                            text: `L${dir}`
+                        });
+                    }
+                });
+            }
+            if (wavePoints.self) {
+                wavePoints.self.forEach(item => {
+                    if (item['.']) {
+                        const time = item['.'][0];
+                        const dir = item[':']?.direction;
+                        allMarkers.push({
+                            time: time,
+                            position: 'aboveBar',
+                            color: dir === 1 ? 'blue' : 'orange',
+                            shape: 'circle',
+                            text: `S${dir}`
+                        });
+                    }
+                });
+            }
+            if (allMarkers.length) setMarkers(allMarkers);
+        }
+
+        // Обновление заголовков линий с расстоянием в пунктах
+        function updateLineTitles(currentPrice) {
+            linesData.forEach(item => {
+                const distance = (item.price - currentPrice) / tickSize;
+                const sign = distance >= 0 ? '+' : '';
+                item.line.applyOptions({
+                    title: `${item.originalTitle} (${sign}${Math.round(distance)})`
+                });
+            });
+        }
+
+        // Запуск обновления свечей через CCXT
+        async function startPriceUpdates() {
+            const exchange = new ccxt.bybit({ enableRateLimit: true });
+            const symbolPair = symbol + '/USDT:USDT';
+            while (true) {
+                try {
+                    const ohlcv = await exchange.fetchOHLCV(symbolPair, tf, undefined, 200);
+                    const data = ohlcv.map(([t, o, h, l, c]) => ({ time: t / 1000, open: o, high: h, low: l, close: c }));
+                    mainSeries.setData(data);
+                    if (data.length > 0) {
+                        updateLineTitles(data[data.length - 1].close);
+                    }
+                } catch (e) {
+                    console.error(e);
+                }
+                await new Promise(resolve => setTimeout(resolve, 1000));
+            }
+        }
+
+        // Основная функция
+        async function main() {
+            try {
+                initChart();
+                const data = await loadData();
+
+                // Устанавливаем tickSize из info
+                if (data.info && data.info.tick_size) {
+                    tickSize = data.info.tick_size;
+                    priceDecimals = Math.max(0, Math.round(-Math.log10(tickSize)));
+                }
+
+                // Отображаем индикаторы
+                if (data.indicators_data) {
+                    drawIndicators(data.indicators_data);
+                }
+
+                // Отображаем уровни (предполагаем, что levels - массив из двух массивов)
+                if (data.levels && Array.isArray(data.levels)) {
+                    if (data.levels[0]) drawLevels(data.levels[0], 0, 'blue');
+                    if (data.levels[1]) drawLevels(data.levels[1], 1, 'red');
+                }
+
+                // Отображаем цели (targets), если есть
+                if (data.targets && Array.isArray(data.targets)) {
+                    // аналогично уровням
+                }
+
+                // Отображаем волны
+                if (data.wave) {
+                    drawWaves(data.wave);
+                }
+
+                // Обновляем информационный div
+                document.getElementById('forWrite').innerText = `${symbol} ${tf} tick: ${tickSize}`;
+
+                // Запускаем обновление цен
+                startPriceUpdates();
+
+                // Инициализация формы ввода (можно скопировать из chart.php)
+                initEntryForm();
+
+            } catch (e) {
+                console.error(e);
+                document.getElementById('forWrite').innerText = 'Ошибка загрузки данных';
+            }
+        }
+
+        // Функции для формы ввода (адаптированы из chart.php)
+        function initEntryForm() {
+            let entryData = { price: null, quantity: null, direction: 'long', stopLoss: null };
+            let entryLine = null;
+            let stopLossLine = null;
+
+            function createEntryLine() {
+                if (!entryData.price) return;
+                if (entryLine) mainSeries.removePriceLine(entryLine);
+                const color = entryData.direction === 'long' ? '#00ff00' : '#ff0000';
+                const lineStyle = entryData.direction === 'long' ? 0 : 2;
+                entryLine = mainSeries.createPriceLine({
+                    price: entryData.price,
+                    color: color,
+                    lineWidth: 2,
+                    lineStyle: lineStyle,
+                    title: 'Вход ' + (entryData.quantity || ''),
+                    axisLabelVisible: true
+                });
+            }
+
+            function createStopLossLine() {
+                if (!entryData.stopLoss) {
+                    if (stopLossLine) { mainSeries.removePriceLine(stopLossLine); stopLossLine = null; }
+                    return;
+                }
+                if (stopLossLine) mainSeries.removePriceLine(stopLossLine);
+                stopLossLine = mainSeries.createPriceLine({
+                    price: entryData.stopLoss,
+                    color: '#ff6600',
+                    lineWidth: 2,
+                    lineStyle: 2,
+                    title: 'Stop Loss',
+                    axisLabelVisible: true
+                });
+            }
+
+            function saveEntryData() {
+                const price = parseFloat(document.getElementById('entryPrice').value);
+                const quantity = parseFloat(document.getElementById('quantity').value);
+                const direction = document.getElementById('direction').value;
+                const stopLoss = document.getElementById('stopLoss').value ? parseFloat(document.getElementById('stopLoss').value) : null;
+                if (isNaN(price) || isNaN(quantity)) { alert('Введите цену и количество'); return false; }
+                entryData = { price, quantity, direction, stopLoss };
+                localStorage.setItem(`entryData_${symbol}`, JSON.stringify(entryData));
+                createEntryLine();
+                createStopLossLine();
+                return true;
+            }
+
+            document.getElementById('saveEntry').addEventListener('click', saveEntryData);
+            document.getElementById('toggleFormBtn').addEventListener('click', () => {
+                const form = document.getElementById('entryForm');
+                form.classList.toggle('hidden');
+                document.getElementById('toggleFormBtn').textContent = form.classList.contains('hidden') ? '☰' : '✕';
+            });
+
+            // Загрузка из localStorage
+            const saved = localStorage.getItem(`entryData_${symbol}`);
+            if (saved) {
+                try {
+                    entryData = JSON.parse(saved);
+                    document.getElementById('entryPrice').value = entryData.price || '';
+                    document.getElementById('quantity').value = entryData.quantity || '';
+                    document.getElementById('direction').value = entryData.direction || 'long';
+                    document.getElementById('stopLoss').value = entryData.stopLoss || '';
+                    createEntryLine();
+                    createStopLossLine();
+                } catch (e) { }
+            }
+        }
+
+        // Запуск
+        main();
+    </script>
+</body>
+</html>
